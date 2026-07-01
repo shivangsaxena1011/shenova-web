@@ -27,3 +27,6 @@ jobs:
         run: |
           npm run lint --if-present
           npx tsc --noEmit
+
+      - name: Build production bundle
+        run: npm run build
