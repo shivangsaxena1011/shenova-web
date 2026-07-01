@@ -77,44 +77,30 @@ export const SafetyHubView: React.FC = () => {
     return () => clearInterval(interval);
   }, [timerActive, activeTimerSeconds, setTimerActive, setTimerSeconds]);
 
-  // Live Location stream simulator (WS connection)
+  // Live Location stream simulator (HTTP telemetry pings)
   useEffect(() => {
     if (isTracking) {
-      // Connect to WS server on port 3001
-      const token = (session as any)?.accessToken || 'mock-token';
-      const wsHost = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001';
-      const wsUrl = `${wsHost}/api/v1/safety/stream?token=${encodeURIComponent(token)}`;
-      
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        console.log('[WS Connected] Real-time coordinate stream active.');
-      };
-
-      ws.onerror = (err) => {
-        console.warn('[WS Error] Standard WS connection refused. Falling back to local HTTP streams.', err);
-      };
-
       // Simulates location telemetry ping every 5 seconds
       const locInterval = setInterval(() => {
         const nextLat = 37.7749 + (Math.random() - 0.5) * 0.002;
         const nextLng = -122.4194 + (Math.random() - 0.5) * 0.002;
         setCoordinates(nextLat, nextLng);
 
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'location-update',
+        fetch('/api/safety/location-update', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
             tripId: checkInId || 'active-trip',
             latitude: nextLat,
             longitude: nextLng,
-          }));
-        }
+          }),
+        }).catch((err) => console.error('HTTP telemetry ping failed:', err));
       }, 5000);
 
       return () => {
         clearInterval(locInterval);
-        if (ws.readyState === WebSocket.OPEN) ws.close();
       };
     }
   }, [isTracking, checkInId, setCoordinates, session]);

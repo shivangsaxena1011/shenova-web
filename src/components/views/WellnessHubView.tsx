@@ -52,30 +52,7 @@ export const WellnessHubView: React.FC = () => {
   // Prevent SSR hydration warnings
   useEffect(() => {
     setMounted(true);
-
-    // Initialize WS connection for Chat Companion
-    const token = (session as any)?.accessToken || 'mock-token';
-    const wsHost = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001';
-    const wsUrl = `${wsHost}/api/v1/safety/stream?token=${encodeURIComponent(token)}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (payload.type === 'ai-response') {
-          setIsTyping(false);
-          setMessages(prev => [...prev, { sender: 'ai', text: payload.content }]);
-        }
-      } catch (err) {
-        console.error('Error parsing WS message:', err);
-      }
-    };
-
-    return () => {
-      if (ws.readyState === WebSocket.OPEN) ws.close();
-    };
-  }, [session]);
+  }, []);
 
   const handleLogWellness = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,33 +86,68 @@ export const WellnessHubView: React.FC = () => {
     }
   };
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
 
     const userText = chatInput.trim();
-    setMessages(prev => [...prev, { sender: 'user', text: userText }]);
+    const updatedMessages = [...messages, { sender: 'user' as const, text: userText }];
+    setMessages(updatedMessages);
     setChatInput('');
     setIsTyping(true);
 
-    // Try sending over WS, fallback to local simulated stream
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'user-message',
-        content: userText,
-      }));
-    } else {
-      // Local simulator fallback
-      setTimeout(() => {
-        setIsTyping(false);
-        setMessages(prev => [
-          ...prev,
-          {
-            sender: 'ai',
-            text: `I hear you. Balancing your wellness during changing cycle days is important. Consider taking a 5-minute break and practicing mindfulness.`
+    try {
+      const response = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: userText,
+          context: updatedMessages.map(m => m.text),
+        }),
+      });
+
+      if (!response.body) throw new Error('Response body stream is not available.');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataText = line.slice(6).trim();
+            if (dataText === '[DONE]') {
+              setIsTyping(false);
+              break;
+            }
+            try {
+              const parsed = JSON.parse(dataText);
+              setMessages(prev => {
+                const last = prev[prev.length - 1];
+                if (last && last.sender === 'ai') {
+                  return [...prev.slice(0, -1), { sender: 'ai', text: last.text + parsed.content }];
+                } else {
+                  return [...prev, { sender: 'ai', text: parsed.content }];
+                }
+              });
+            } catch (err) {
+              // Ignore line parse errors
+            }
           }
-        ]);
-      }, 1500);
+        }
+      }
+    } catch (err) {
+      console.error('Streaming failed:', err);
+      setIsTyping(false);
+      setMessages(prev => [...prev, { sender: 'ai', text: 'Sorry, I encountered an issue generating a response.' }]);
     }
   };
 
